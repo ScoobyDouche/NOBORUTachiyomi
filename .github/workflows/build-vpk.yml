@@ -1,0 +1,66 @@
+name: Build VPK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-vpk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
+
+      - name: Ensure param.sfo has Title ID NBTACH001
+        run: |
+          python3 - <<'PY'
+          import struct, os
+          TITLE_ID = "NBTACH001"
+          TITLE    = "NoboruTachiyomi"
+          key_table = data_table = index_table = b""
+          def add(key, value, fmt):
+              global key_table, data_table, index_table
+              ko, do = len(key_table), len(data_table)
+              key_table += key.encode() + b"\x00"
+              data_table += value
+              index_table += struct.pack("<HHIII", ko, fmt, len(value), len(value), do)
+          add("TITLE_ID", TITLE_ID.encode() + b"\x00", 0x0204)
+          add("TITLE",    TITLE.encode() + b"\x00",    0x0204)
+          add("CATEGORY", b"MG\x00",                    0x0204)
+          add("APP_VER",  b"01.00\x00",                 0x0204)
+          while len(key_table) % 4: key_table += b"\x00"
+          key_off  = 20 + len(index_table)
+          data_off = key_off + len(key_table)
+          header = b"\x00PSF" + struct.pack("<IIII", 0x00000101, key_off, data_off, 4)
+          os.makedirs("source/sce_sys", exist_ok=True)
+          open("source/sce_sys/param.sfo", "wb").write(header + index_table + key_table + data_table)
+          print("param.sfo ready →", TITLE_ID, TITLE)
+          PY
+
+      - name: Package VPK
+        run: |
+          set -eu
+          short=$(git rev-parse --short HEAD)
+          mkdir -p out
+          cd source
+          7z a -tzip -mx=9 -x'!.DS_Store' -x'!*.git*' "../out/NoboruTachiyomi-${short}.vpk" .
+          cd ..
+          ls -lh out/
+          echo "SHORT=$short" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NoboruTachiyomi-${{ env.SHORT }}
+          path: out/NoboruTachiyomi-*.vpk
+          if-no-files-found: error
+          retention-days: 14
